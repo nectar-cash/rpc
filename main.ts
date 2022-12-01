@@ -32,7 +32,7 @@ console.log('Auction URL:', flags.auction)
 const transactions: StoredTransactions = {}
 
 const app = new Application() // { logErrors: false }
-const port = parseInt(env['PORT'] || '8000')
+const port = parseInt(Deno.env.get('PORT') || '8000')
 
 const router = new Router()
 
