@@ -5,11 +5,14 @@ export { config } from 'https://deno.land/x/dotenv@v3.2.0/mod.ts'
 export { ethers } from 'npm:ethers@^5.7.2'
 export { FlashbotsBundleProvider } from 'npm:@flashbots/ethers-provider-bundle@^0.5.0'
 
-export { METHOD_AUCTION_RESULT, METHOD_RPC_NEW_AUCTION } from '../protocol/constants.ts'
+export {
+  METHOD_AUCTION_RESULT,
+  METHOD_RPC_NEW_AUCTION,
+} from 'https://raw.githubusercontent.com/nectar-cash/protocol/main/constants.ts'
 export type {
   TransactionIntent,
   BundleTransactionSigned,
   NectarOptions,
   PayloadRPCNewAuction,
   PayloadAuctionResult,
-} from '../protocol/types.ts'
+} from 'https://raw.githubusercontent.com/nectar-cash/protocol/main/types.ts'
