@@ -1,5 +1,4 @@
 import { Application, Router } from './deps.ts'
-import { parse } from './deps.ts'
 import { ethers } from './deps.ts'
 import { config } from './deps.ts'
 import { FlashbotsBundleProvider } from './deps.ts'
@@ -23,20 +22,25 @@ interface StoredTransactions {
   }
 }
 
-const env = config()
+const env = { ...config(), ...Deno.env.toObject() }
 const wallet = new ethers.Wallet(env['RPC_PRIVATE_KEY'], rpc)
-
-const flags = parse(Deno.args, { string: ['auction', 'address', 'publisher'] })
-console.log('Auction URL:', flags.auction)
 
 const transactions: StoredTransactions = {}
 
 const app = new Application() // { logErrors: false }
-const port = parseInt(Deno.env.get('PORT') || '8000')
+const port = parseInt(env['PORT'] || '8000')
 
 const router = new Router()
 
-const auctionConnection = new WebSocket(`${flags.auction}/rpc?address=${flags.address}`)
+const auctionConnection = new WebSocket(`${env['AUCTION_URL']}/rpc?address=${wallet.address}`)
+
+auctionConnection.onopen = () => {
+  console.log('connected to auction')
+}
+
+auctionConnection.onerror = function (e) {
+  console.log('auction connection error', e)
+}
 
 auctionConnection.onmessage = async (m) => {
   try {
