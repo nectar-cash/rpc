@@ -1,7 +1,6 @@
 import { Application, Router } from './deps.ts'
 import { ethers } from './deps.ts'
 import { config } from './deps.ts'
-import { FlashbotsBundleProvider } from './deps.ts'
 
 import {
   TransactionIntent,
@@ -13,6 +12,8 @@ import {
 import { METHOD_AUCTION_RESULT, METHOD_RPC_NEW_AUCTION } from './deps.ts'
 
 import rpc from './RPCProxy.ts'
+import publishBundle from './Publisher.ts'
+import reportAddressEvent, { reportEvent } from './EventReporter.ts'
 
 interface StoredTransactions {
   [hash: string]: {
@@ -35,7 +36,7 @@ const router = new Router()
 const auctionConnection = new WebSocket(`${env['AUCTION_URL']}/rpc?address=${wallet.address}`)
 
 auctionConnection.onopen = () => {
-  console.log('connected to auction')
+  console.log('Connected to auction', env['AUCTION_URL'])
 }
 
 auctionConnection.onerror = function (e) {
@@ -49,11 +50,13 @@ auctionConnection.onmessage = async (m) => {
     console.log('\nAuction message:', method)
     if (method === METHOD_AUCTION_RESULT) {
       const { hash, hasWinner, bundle } = data as PayloadAuctionResult['data']
+      const userAddress = transactions[hash].parsedTx.from || '0x0'
       if (hasWinner) {
         console.log('There is a winning bundle with', bundle.length, 'items')
-        // TODO validate options
-        // TODO create actual flashbots bundle
-        console.log(hash, bundle)
+
+        reportAddressEvent(userAddress, `RPC: Received winning auction bundle for tx ${hash} with ${bundle.length} txs`)
+        // validate options
+        // console.log(hash, bundle)
         const transactionBundle = bundle.map((item) => {
           if (item.signedTransaction) {
             return item
@@ -65,93 +68,97 @@ auctionConnection.onmessage = async (m) => {
             console.error('unsupported transaction in bundle!')
           }
         }) as BundleTransactionSigned[]
+        // console.log('transaction bundle formed', transactionBundle)
 
-        console.log(transactionBundle)
-
-        // Flashbots provider requires passing in a standard provider
-        const flashbotsProvider = await FlashbotsBundleProvider.create(
-          rpc, // a normal ethers.js provider, to perform gas estimiations and nonce lookups
-          wallet, // ethers.js signer wallet, only for signing request payloads, not transactions
-          'https://relay-goerli.flashbots.net/',
-          'goerli'
-        )
-
-        const targetBlockNumber = (await rpc.getBlockNumber()) + 1
-        console.log(targetBlockNumber)
-
-        const signedTransactions = await flashbotsProvider.signBundle(transactionBundle)
-        console.log(JSON.stringify(signedTransactions))
-
-        const simulation = await flashbotsProvider.simulate(signedTransactions, targetBlockNumber)
-        console.log(JSON.stringify(simulation, null, 2))
-
-        const flashbotsTransactionResponse = await flashbotsProvider.sendBundle(transactionBundle, targetBlockNumber)
-        console.log(flashbotsTransactionResponse)
-
-        // const resp = await fetch(`${flags.publisher}/bundle`, {
-        //   method: 'POST',
-        //   headers: {
-        //     'Content-Type': 'application/json',
-        //     'X-API-Key': 'nectar',
-        //   },
-        //   body: JSON.stringify({ bundle }),
-        // })
-        // console.log(resp)
+        reportAddressEvent(userAddress, `RPC: Sent bundle with tx ${hash} to be published`)
+        const publishOutcome = await publishBundle(transactionBundle, hash, userAddress)
+        if (publishOutcome) {
+          reportAddressEvent(userAddress, `RPC: Bundle with tx ${hash} included in a block!`)
+          console.log('Bundle published!')
+        } else {
+          console.log('Error during bundle publishing')
+          reportAddressEvent(userAddress, `RPC: Publishing bundle with tx ${hash} failed.`)
+        }
       } else {
-        // await rpc.send('eth_sendRawTransaction', [transactions[hash].rawTx])
+        console.log('No auction bids, delivering transaction normally')
+        reportAddressEvent(userAddress, `RPC: No bids received for tx ${hash}, publishing publicly`)
+        const out = await rpc.send('eth_sendRawTransaction', [transactions[hash].rawTx])
+        console.log('eth_sendRawTransaction response', out)
       }
     }
   } catch (e) {
     console.error(e)
     console.error('cannot parse message', m.data)
   }
+}
 
-  // TODO handle winning bundles
-  // TODO handle concluded without bids
+function isMEVSafe(tx: ethers.Transaction) {
+  if (tx.to === '0x328E07B5b09a8c9e01A849C8d8f246d56ed3ec75') {
+    return true
+  }
+  if (tx.data === '0x0') {
+    return true
+  }
+  return false
 }
 
 router.post('/', async (ctx) => {
   const body = await ctx.request.body({ type: 'json' }).value
   const { method, params, id, jsonrpc } = body
-  console.log('POST', method, params, id, jsonrpc)
+  // console.log('POST', method, params, id, jsonrpc)
 
   try {
     if (method === 'eth_sendRawTransaction') {
       const rawTx: string = params[0]
-      console.log('signed:', rawTx)
+      // console.log('signed:', rawTx)
       const parsed = ethers.utils.parseTransaction(rawTx)
-      console.log('Parsed Tx', parsed)
       const { hash } = parsed
-
       if (!hash) throw new Error('Transaction has no hash')
 
-      const nectarOptions: NectarOptions = {
-        onlyBackrun: false,
-        rewardAddress: parsed.from || ethers.constants.AddressZero,
+      if (hash in transactions) {
+        // parsed.from && reportAddressEvent(parsed.from, `RPC: Repeated tx ${hash} ignored`)
+        console.log('Received a repeated submission of', hash, 'Ignoring')
+        ctx.response.body = { id, jsonrpc, result: hash }
+        return
       }
 
-      transactions[hash] = {
-        rawTx,
-        parsedTx: parsed,
-        options: nectarOptions ?? {},
-      }
+      console.log('Received new tx', parsed)
+      parsed.from && reportAddressEvent(parsed.from, `RPC: Received tx ${hash}`)
 
-      const txIntent = {
-        ...parsed,
-        v: undefined,
-        r: undefined,
-        s: undefined,
-      } as TransactionIntent
+      if (isMEVSafe(parsed)) {
+        reportAddressEvent(parsed.from!, `RPC: Tx ${hash} is MEV-safe, publishing publicly`)
+        const out = await rpc.send('eth_sendRawTransaction', [rawTx])
+        console.log('eth_sendRawTransaction response', out)
+      } else {
+        const nectarOptions: NectarOptions = {
+          onlyBackrun: false,
+          rewardAddress: parsed.from || ethers.constants.AddressZero,
+        }
 
-      const newAuctionPayload: PayloadRPCNewAuction = {
-        method: METHOD_RPC_NEW_AUCTION,
-        data: {
-          hash,
-          tx: txIntent,
-          options: nectarOptions,
-        },
+        transactions[hash] = {
+          rawTx,
+          parsedTx: parsed,
+          options: nectarOptions ?? {},
+        }
+
+        const txIntent = {
+          ...parsed,
+          v: undefined,
+          r: undefined,
+          s: undefined,
+        } as TransactionIntent
+
+        const newAuctionPayload: PayloadRPCNewAuction = {
+          method: METHOD_RPC_NEW_AUCTION,
+          data: {
+            hash,
+            tx: txIntent,
+            options: nectarOptions,
+          },
+        }
+        auctionConnection.send(JSON.stringify(newAuctionPayload))
+        parsed.from && reportAddressEvent(parsed.from, `RPC: Sent tx ${hash} to auction`)
       }
-      auctionConnection.send(JSON.stringify(newAuctionPayload))
 
       ctx.response.body = { id, jsonrpc, result: hash }
     } else {
@@ -166,5 +173,7 @@ router.post('/', async (ctx) => {
 app.use(router.routes())
 app.use(router.allowedMethods())
 
+reportEvent('RPC node booted')
 console.log(`RPC Server is running at http://localhost:${port}`)
+
 await app.listen({ port: port })
