@@ -23,3 +23,4 @@ export type {
   PayloadRPCNewAuction,
   PayloadAuctionResult,
 } from 'https://raw.githubusercontent.com/nectar-cash/protocol/main/types.ts'
+// deps update
