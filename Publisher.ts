@@ -55,6 +55,17 @@ const deliverPayloadForBlock = async (userTxHash: string): Promise<boolean> => {
     )
     return false
   } else {
+    if (simulation.firstRevert) {
+      reportAddressEvent(
+        transactions[userTxHash].userAddress,
+        `Publisher: Tx ${userTxHash} bundle simulation reverted.`
+      )
+      console.error('simulation reverted')
+      console.error('first revert', simulation.firstRevert)
+      console.error('results', simulation.results)
+      return false
+    }
+
     const flashbotsTransactionResponse = await flashbotsProvider.sendBundle(
       transactions[userTxHash].bundle,
       targetBlockNumber

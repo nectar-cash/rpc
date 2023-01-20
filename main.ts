@@ -78,6 +78,9 @@ auctionConnection.onmessage = async (m) => {
         } else {
           console.log('Error during bundle publishing')
           reportAddressEvent(userAddress, `RPC: Publishing bundle with tx ${hash} failed.`)
+          reportAddressEvent(userAddress, `RPC: Publishing tx ${hash} publicly. Sorry about this.`)
+          const out = await rpc.send('eth_sendRawTransaction', [transactions[hash].rawTx])
+          console.log('eth_sendRawTransaction response', out)
         }
       } else {
         console.log('No auction bids, delivering transaction normally')
